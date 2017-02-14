@@ -33,7 +33,6 @@ namespace Microsoft.AspNetCore.SignalR.Internal
             MethodReturnType = methodInfo.ReturnType;
             IsMethodAsync = typeof(Task).IsAssignableFrom(MethodReturnType);
             TaskGenericType = IsMethodAsync ? GetTaskInnerTypeOrNull(MethodReturnType) : null;
-            //IsTypeAssignableFromIActionResult = typeof(IActionResult).IsAssignableFrom(TaskGenericType ?? MethodReturnType);
         }
 
         private delegate Task<object> ActionExecutorAsync(object target, object[] parameters);
