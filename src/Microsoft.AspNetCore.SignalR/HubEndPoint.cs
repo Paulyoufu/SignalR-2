@@ -9,12 +9,10 @@ using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.SignalR.Internal;
 using Microsoft.AspNetCore.Sockets;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using System.Linq.Expressions;
-using System.ComponentModel;
-using Microsoft.Extensions.Internal;
 
 namespace Microsoft.AspNetCore.SignalR
 {
@@ -254,7 +252,7 @@ namespace Microsoft.AspNetCore.SignalR
                 Id = invocationDescriptor.Id
             };
 
-            var methodInfo = descriptor.MethodInfo;
+            var methodExecutor = descriptor.MethodExecutor;
 
             using (var scope = _serviceScopeFactory.CreateScope())
             {
@@ -265,28 +263,24 @@ namespace Microsoft.AspNetCore.SignalR
                 {
                     InitializeHub(hub, connection);
 
-                    var executor = ObjectMethodExecutor.Create(methodInfo, typeof(THub).GetTypeInfo());
-                    var res = executor.MethodReturnType;
-
-                    if (executor.IsMethodAsync)
+                    object result = null;
+                    if (methodExecutor.IsMethodAsync)
                     {
-                        await executor.ExecuteAsync(hub, invocationDescriptor.Arguments);
-                    }
-                    var result = methodInfo.Invoke(hub, invocationDescriptor.Arguments);
-                    var resultTask = result as Task;
-                    if (resultTask != null)
-                    {
-                        await resultTask;
-                        if (methodInfo.ReturnType.GetTypeInfo().IsGenericType)
+                        if (methodExecutor.TaskGenericType == null)
                         {
-                            var property = resultTask.GetType().GetProperty("Result");
-                            invocationResult.Result = property?.GetValue(resultTask);
+                            await (Task)methodExecutor.Execute(hub, invocationDescriptor.Arguments);
+                        }
+                        else
+                        {
+                            result = await methodExecutor.ExecuteAsync(hub, invocationDescriptor.Arguments);
                         }
                     }
                     else
                     {
-                        invocationResult.Result = result;
+                        result = methodExecutor.Execute(hub, invocationDescriptor.Arguments);
                     }
+
+                    invocationResult.Result = result;
                 }
                 catch (TargetInvocationException ex)
                 {
@@ -316,9 +310,9 @@ namespace Microsoft.AspNetCore.SignalR
 
         private void DiscoverHubMethods()
         {
-            var type = typeof(THub);
+            var typeInfo = typeof(THub).GetTypeInfo();
 
-            foreach (var methodInfo in type.GetTypeInfo().DeclaredMethods.Where(m => IsHubMethod(m)))
+            foreach (var methodInfo in typeInfo.DeclaredMethods.Where(m => IsHubMethod(m)))
             {
                 var methodName = methodInfo.Name;
 
@@ -327,7 +321,8 @@ namespace Microsoft.AspNetCore.SignalR
                     throw new NotSupportedException($"Duplicate definitions of '{methodInfo.Name}'. Overloading is not supported.");
                 }
 
-                _methods[methodName] = new HubMethodDescriptor(methodInfo);
+                var executor = ObjectMethodExecutor.Create(methodInfo, typeInfo);
+                _methods[methodName] = new HubMethodDescriptor(executor);
 
                 if (_logger.IsEnabled(LogLevel.Debug))
                 {
@@ -372,266 +367,15 @@ namespace Microsoft.AspNetCore.SignalR
         // REVIEW: We can decide to move this out of here if we want pluggable hub discovery
         private class HubMethodDescriptor
         {
-            public HubMethodDescriptor(MethodInfo methodInfo)
+            public HubMethodDescriptor(ObjectMethodExecutor methodExecutor)
             {
-                MethodInfo = methodInfo;
-                ParameterTypes = methodInfo.GetParameters().Select(p => p.ParameterType).ToArray();
+                MethodExecutor = methodExecutor;
+                ParameterTypes = methodExecutor.ActionParameters.Select(p => p.ParameterType).ToArray();
             }
 
-            public MethodInfo MethodInfo { get; }
+            public ObjectMethodExecutor MethodExecutor { get; }
 
             public Type[] ParameterTypes { get; }
-        }
-    }
-
-    public class ObjectMethodExecutor
-    {
-        private object[] _parameterDefaultValues;
-        private ActionExecutorAsync _executorAsync;
-        private ActionExecutor _executor;
-
-        private static readonly MethodInfo _convertOfTMethod =
-            typeof(ObjectMethodExecutor).GetRuntimeMethods().Single(methodInfo => methodInfo.Name == nameof(ObjectMethodExecutor.Convert));
-
-        private ObjectMethodExecutor(MethodInfo methodInfo, TypeInfo targetTypeInfo)
-        {            
-            if (methodInfo == null)
-            {
-                throw new ArgumentNullException(nameof(methodInfo));
-            }
-            MethodInfo = methodInfo;
-            TargetTypeInfo = targetTypeInfo;
-            ActionParameters = methodInfo.GetParameters();
-            MethodReturnType = methodInfo.ReturnType;
-            IsMethodAsync = typeof(Task).IsAssignableFrom(MethodReturnType);
-            TaskGenericType = IsMethodAsync ? GetTaskInnerTypeOrNull(MethodReturnType) : null;
-            //IsTypeAssignableFromIActionResult = typeof(IActionResult).IsAssignableFrom(TaskGenericType ?? MethodReturnType);
-        }
-
-        private delegate Task<object> ActionExecutorAsync(object target, object[] parameters);
-
-        private delegate object ActionExecutor(object target, object[] parameters);
-
-        private delegate void VoidActionExecutor(object target, object[] parameters);
-
-        public MethodInfo MethodInfo { get; }
-
-        public ParameterInfo[] ActionParameters { get; }
-
-        public TypeInfo TargetTypeInfo { get; }
-
-        public Type TaskGenericType { get; }
-
-        // This field is made internal set because it is set in unit tests.
-        public Type MethodReturnType { get; internal set; }
-
-        public bool IsMethodAsync { get; }
-
-        public bool IsTypeAssignableFromIActionResult { get; }
-
-        private ActionExecutorAsync TaskOfTActionExecutorAsync
-        {
-            get
-            {
-                if (_executorAsync == null)
-                {
-                    _executorAsync = GetExecutorAsync(TaskGenericType, MethodInfo, TargetTypeInfo);
-                }
-
-                return _executorAsync;
-            }
-        }
-
-        public static ObjectMethodExecutor Create(MethodInfo methodInfo, TypeInfo targetTypeInfo)
-        {
-            var executor = new ObjectMethodExecutor(methodInfo, targetTypeInfo);
-            executor._executor = GetExecutor(methodInfo, targetTypeInfo);
-            return executor;
-        }
-
-        public Task<object> ExecuteAsync(object target, object[] parameters)
-        {
-            return TaskOfTActionExecutorAsync(target, parameters);
-        }
-
-        public object Execute(object target, object[] parameters)
-        {
-            return _executor(target, parameters);
-        }
-
-        public object GetDefaultValueForParameter(int index)
-        {
-            if (index < 0 || index > ActionParameters.Length - 1)
-            {
-                throw new ArgumentOutOfRangeException(nameof(index));
-            }
-
-            EnsureParameterDefaultValues();
-
-            return _parameterDefaultValues[index];
-        }
-
-        private static ActionExecutor GetExecutor(MethodInfo methodInfo, TypeInfo targetTypeInfo)
-        {
-            // Parameters to executor
-            var targetParameter = Expression.Parameter(typeof(object), "target");
-            var parametersParameter = Expression.Parameter(typeof(object[]), "parameters");
-
-            // Build parameter list
-            var parameters = new List<Expression>();
-            var paramInfos = methodInfo.GetParameters();
-            for (int i = 0; i < paramInfos.Length; i++)
-            {
-                var paramInfo = paramInfos[i];
-                var valueObj = Expression.ArrayIndex(parametersParameter, Expression.Constant(i));
-                var valueCast = Expression.Convert(valueObj, paramInfo.ParameterType);
-
-                // valueCast is "(Ti) parameters[i]"
-                parameters.Add(valueCast);
-            }
-
-            // Call method
-            MethodCallExpression methodCall;
-
-            if (!methodInfo.IsStatic)
-            {
-                var instanceCast = Expression.Convert(targetParameter, targetTypeInfo.AsType());
-                methodCall = Expression.Call(instanceCast, methodInfo, parameters);
-            }
-            else
-            {
-                methodCall = Expression.Call(null, methodInfo, parameters);
-            }
-
-            // methodCall is "((Ttarget) target) method((T0) parameters[0], (T1) parameters[1], ...)"
-            // Create function
-            if (methodCall.Type == typeof(void))
-            {
-                var lambda = Expression.Lambda<VoidActionExecutor>(methodCall, targetParameter, parametersParameter);
-                var voidExecutor = lambda.Compile();
-                return WrapVoidAction(voidExecutor);
-            }
-            else
-            {
-                // must coerce methodCall to match ActionExecutor signature
-                var castMethodCall = Expression.Convert(methodCall, typeof(object));
-                var lambda = Expression.Lambda<ActionExecutor>(castMethodCall, targetParameter, parametersParameter);
-                return lambda.Compile();
-            }
-        }
-
-        private static ActionExecutor WrapVoidAction(VoidActionExecutor executor)
-        {
-            return delegate (object target, object[] parameters)
-            {
-                executor(target, parameters);
-                return null;
-            };
-        }
-
-        private static ActionExecutorAsync GetExecutorAsync(Type taskInnerType, MethodInfo methodInfo, TypeInfo targetTypeInfo)
-        {
-            // Parameters to executor
-            var targetParameter = Expression.Parameter(typeof(object), "target");
-            var parametersParameter = Expression.Parameter(typeof(object[]), "parameters");
-
-            // Build parameter list
-            var parameters = new List<Expression>();
-            var paramInfos = methodInfo.GetParameters();
-            for (int i = 0; i < paramInfos.Length; i++)
-            {
-                var paramInfo = paramInfos[i];
-                var valueObj = Expression.ArrayIndex(parametersParameter, Expression.Constant(i));
-                var valueCast = Expression.Convert(valueObj, paramInfo.ParameterType);
-
-                // valueCast is "(Ti) parameters[i]"
-                parameters.Add(valueCast);
-            }
-
-            // Call method
-            var instanceCast = Expression.Convert(targetParameter, targetTypeInfo.AsType());
-            var methodCall = Expression.Call(instanceCast, methodInfo, parameters);
-
-            var coerceMethodCall = GetCoerceMethodCallExpression(taskInnerType, methodCall, methodInfo);
-            var lambda = Expression.Lambda<ActionExecutorAsync>(coerceMethodCall, targetParameter, parametersParameter);
-            return lambda.Compile();
-        }
-
-        // We need to CoerceResult as the object value returned from methodInfo.Invoke has to be cast to a Task<T>.
-        // This is necessary to enable calling await on the returned task.
-        // i.e we need to write the following var result = await (Task<ActualType>)mInfo.Invoke.
-        // Returning Task<object> enables us to await on the result.
-        private static Expression GetCoerceMethodCallExpression(
-            Type taskValueType,
-            MethodCallExpression methodCall,
-            MethodInfo methodInfo)
-        {
-            var castMethodCall = Expression.Convert(methodCall, typeof(object));
-            // for: public Task<T> Action()
-            // constructs: return (Task<object>)Convert<T>((Task<T>)result)
-            var genericMethodInfo = _convertOfTMethod.MakeGenericMethod(taskValueType);
-            var genericMethodCall = Expression.Call(null, genericMethodInfo, castMethodCall);
-            var convertedResult = Expression.Convert(genericMethodCall, typeof(Task<object>));
-            return convertedResult;
-        }
-
-        /// <summary>
-        /// Cast Task of T to Task of object
-        /// </summary>
-        private static async Task<object> CastToObject<T>(Task<T> task)
-        {
-            return (object)await task;
-        }
-
-        private static Type GetTaskInnerTypeOrNull(Type type)
-        {
-            var genericType = ClosedGenericMatcher.ExtractGenericInterface(type, typeof(Task<>));
-
-            return genericType?.GenericTypeArguments[0];
-        }
-
-        private static Task<object> Convert<T>(object taskAsObject)
-        {
-            var task = (Task<T>)taskAsObject;
-            return CastToObject<T>(task);
-        }
-
-        private void EnsureParameterDefaultValues()
-        {
-            if (_parameterDefaultValues == null)
-            {
-                var count = ActionParameters.Length;
-                _parameterDefaultValues = new object[count];
-
-                for (var i = 0; i < count; i++)
-                {
-                    var parameterInfo = ActionParameters[i];
-                    object defaultValue;
-
-                    if (parameterInfo.HasDefaultValue)
-                    {
-                        defaultValue = parameterInfo.DefaultValue;
-                    }
-                    else
-                    {
-                        var defaultValueAttribute = parameterInfo
-                            .GetCustomAttribute<DefaultValueAttribute>(inherit: false);
-
-                        if (defaultValueAttribute?.Value == null)
-                        {
-                            defaultValue = parameterInfo.ParameterType.GetTypeInfo().IsValueType
-                                ? Activator.CreateInstance(parameterInfo.ParameterType)
-                                : null;
-                        }
-                        else
-                        {
-                            defaultValue = defaultValueAttribute.Value;
-                        }
-                    }
-
-                    _parameterDefaultValues[i] = defaultValue;
-                }
-            }
         }
     }
 }
