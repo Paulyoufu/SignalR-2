@@ -1,4 +1,4 @@
-// Copyright (c) .NET Foundation. All rights reserved.
+﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
@@ -21,7 +21,7 @@ namespace Microsoft.AspNetCore.Sockets.Formatters
         public static bool TryFormatMessage(Message message, Span<byte> buffer, out int bytesWritten)
         {
             // Need at least: Length of 'data: ', one character type, one \r\n, and the trailing \r\n
-            if (buffer.Length < DataPrefix.Length + 5)
+            if (buffer.Length < DataPrefix.Length + 1 + Newline.Length + Newline.Length)
             {
                 bytesWritten = 0;
                 return false;
@@ -53,7 +53,7 @@ namespace Microsoft.AspNetCore.Sockets.Formatters
             }
             Newline.CopyTo(buffer);
 
-            bytesWritten = DataPrefix.Length + 3 + writtenForPayload + 2;
+            bytesWritten = DataPrefix.Length + Newline.Length + 1 + writtenForPayload + Newline.Length;
             return true;
         }
 
@@ -72,7 +72,7 @@ namespace Microsoft.AspNetCore.Sockets.Formatters
                 // TODO: We're going to need to fix this as part of https://github.com/aspnet/SignalR/issues/192
                 var message = Convert.ToBase64String(payload.ToArray());
                 var encodedSize = DataPrefix.Length + Encoding.UTF8.GetByteCount(message) + Newline.Length;
-                if(buffer.Length < encodedSize)
+                if (buffer.Length < encodedSize)
                 {
                     bytesWritten = 0;
                     return false;
