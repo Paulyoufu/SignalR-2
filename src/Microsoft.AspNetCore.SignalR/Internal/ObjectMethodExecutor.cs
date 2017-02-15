@@ -12,7 +12,7 @@ using Microsoft.Extensions.Internal;
 
 namespace Microsoft.AspNetCore.SignalR.Internal
 {
-    class ObjectMethodExecutor
+    internal class ObjectMethodExecutor
     {
         private object[] _parameterDefaultValues;
         private ActionExecutorAsync _executorAsync;
@@ -53,8 +53,6 @@ namespace Microsoft.AspNetCore.SignalR.Internal
         public Type MethodReturnType { get; internal set; }
 
         public bool IsMethodAsync { get; }
-
-        public bool IsTypeAssignableFromIActionResult { get; }
 
         private ActionExecutorAsync TaskOfTActionExecutorAsync
         {
