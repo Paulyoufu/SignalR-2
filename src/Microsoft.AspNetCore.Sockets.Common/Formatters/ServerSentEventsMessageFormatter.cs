@@ -20,6 +20,14 @@ namespace Microsoft.AspNetCore.Sockets.Formatters
 
         public static bool TryFormatMessage(Message message, Span<byte> buffer, out int bytesWritten)
         {
+            if (!message.EndOfMessage)
+            {
+                // This is a truely exceptional condition since we EXPECT callers to have already
+                // buffered incomplete messages and synthesized the correct, complete message before
+                // giving it to us. Hence we throw, instead of returning false.
+                throw new InvalidOperationException("Cannot format message where endOfMessage is false using this format");
+            }
+
             // Need at least: Length of 'data: ', one character type, one \r\n, and the trailing \r\n
             if (buffer.Length < DataPrefix.Length + 1 + Newline.Length + Newline.Length)
             {

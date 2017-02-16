@@ -1,6 +1,8 @@
-// Copyright (c) .NET Foundation. All rights reserved.
+﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
+using System;
+using System.IO.Pipelines;
 using System.Text;
 using Microsoft.AspNetCore.Sockets.Tests;
 using Xunit;
@@ -28,6 +30,15 @@ namespace Microsoft.AspNetCore.Sockets.Formatters.Tests
             buffer = new byte[bufferSize];
             Assert.True(ServerSentEventsMessageFormatter.TryFormatMessage(message, buffer, out written));
             Assert.Equal(ExpectedSize, written);
+        }
+
+        [Fact]
+        public void WriteInvalidMessages()
+        {
+            var message = new Message(ReadableBuffer.Create(new byte[0]).Preserve(), MessageType.Binary, endOfMessage: false);
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                ServerSentEventsMessageFormatter.TryFormatMessage(message, Span<byte>.Empty, out var written));
+            Assert.Equal("Cannot format message where endOfMessage is false using this format", ex.Message);
         }
 
         [Theory]
