@@ -20,7 +20,7 @@ namespace Microsoft.AspNetCore.Sockets.Formatters.Tests
             byte[] buffer;
             int bufferSize;
             int written;
-            for(bufferSize = 0; bufferSize < 23; bufferSize++)
+            for (bufferSize = 0; bufferSize < 23; bufferSize++)
             {
                 buffer = new byte[bufferSize];
                 Assert.False(ServerSentEventsMessageFormatter.TryFormatMessage(message, buffer, out written));

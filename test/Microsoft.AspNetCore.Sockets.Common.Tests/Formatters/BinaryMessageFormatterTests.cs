@@ -178,7 +178,7 @@ namespace Microsoft.AspNetCore.Sockets.Formatters.Tests
             byte[] buffer;
             int bufferSize;
             int written;
-            for(bufferSize = 0; bufferSize < 13; bufferSize++)
+            for (bufferSize = 0; bufferSize < 13; bufferSize++)
             {
                 buffer = new byte[bufferSize];
                 Assert.False(MessageFormatter.TryFormatMessage(message, buffer, MessageFormat.Binary, out written));
